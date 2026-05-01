@@ -1,6 +1,6 @@
 ---
 title: MyAiPlate ML API
-emoji: food
+emoji: 🍽️
 colorFrom: yellow
 colorTo: green
 sdk: docker
