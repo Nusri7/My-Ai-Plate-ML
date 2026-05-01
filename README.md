@@ -21,6 +21,12 @@ Set this secret in Hugging Face Space Settings:
 
 - `GEMINI_API_KEY` = your Google Gemini API key
 
+Optional reliability variables:
+
+- `GEMINI_MODELS` (default: `gemini-2.5-flash,gemini-2.0-flash`)
+- `GEMINI_MAX_RETRIES` (default: `3`)
+- `GEMINI_RETRY_BASE_DELAY_SEC` (default: `1.5`)
+
 ## Request
 
 `multipart/form-data`

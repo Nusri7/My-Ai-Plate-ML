@@ -1,7 +1,8 @@
+import asyncio
 import os
 import re
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Type, TypeVar
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from google import genai
@@ -88,6 +89,9 @@ class GeminiChatResponse(BaseModel):
 
 class ChatResponse(BaseModel):
     llm_response: str
+
+
+T = TypeVar("T", bound=BaseModel)
 
 
 app = FastAPI(
@@ -190,6 +194,68 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
     )
 
 
+def _gemini_models() -> List[str]:
+    configured = os.getenv("GEMINI_MODELS", "gemini-2.5-flash,gemini-2.0-flash")
+    models = [m.strip() for m in configured.split(",") if m.strip()]
+    return models if models else ["gemini-2.5-flash"]
+
+
+def _is_retryable_gemini_error(message: str) -> bool:
+    upper = message.upper()
+    retry_tokens = [
+        "503",
+        "UNAVAILABLE",
+        "429",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL",
+    ]
+    return any(token in upper for token in retry_tokens)
+
+
+async def _generate_structured_json(
+    client: genai.Client,
+    contents: Any,
+    schema_model: Type[T],
+) -> T:
+    models = _gemini_models()
+    max_retries = max(1, int(os.getenv("GEMINI_MAX_RETRIES", "3")))
+    base_delay = max(0.2, float(os.getenv("GEMINI_RETRY_BASE_DELAY_SEC", "1.5")))
+    last_error = "unknown error"
+
+    for model in models:
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_json_schema": schema_model.model_json_schema(),
+                    },
+                )
+                return schema_model.model_validate_json(response.text or "{}")
+            except Exception as exc:
+                last_error = str(exc)
+                retryable = _is_retryable_gemini_error(last_error)
+                if retryable and attempt < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
+                    continue
+                if retryable:
+                    break
+                raise HTTPException(
+                    status_code=502, detail=f"Gemini inference failed: {last_error}"
+                ) from exc
+
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Gemini is temporarily unavailable after retries. "
+            f"Models tried: {', '.join(models)}. Last error: {last_error}"
+        ),
+    )
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -229,20 +295,11 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
         mime_type=image_file.content_type,
     )
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[image_part, _build_prompt()],
-            config={
-                "response_mime_type": "application/json",
-                "response_json_schema": GeminiDetectionResponse.model_json_schema(),
-            },
-        )
-        parsed = GeminiDetectionResponse.model_validate_json(response.text or "{}")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Gemini inference failed: {str(exc)}"
-        ) from exc
+    parsed = await _generate_structured_json(
+        client=client,
+        contents=[image_part, _build_prompt()],
+        schema_model=GeminiDetectionResponse,
+    )
 
     detected_items: List[str] = []
     confidence_scores: List[float] = []
@@ -289,20 +346,11 @@ async def generate_meal_plan(
     client = genai.Client(api_key=api_key)
     prompt = _build_meal_plan_prompt(payload, target_calories, macro_hint)
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_json_schema": GeminiMealPlanResponse.model_json_schema(),
-            },
-        )
-        parsed = GeminiMealPlanResponse.model_validate_json(response.text or "{}")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Gemini inference failed: {str(exc)}"
-        ) from exc
+    parsed = await _generate_structured_json(
+        client=client,
+        contents=prompt,
+        schema_model=GeminiMealPlanResponse,
+    )
 
     total_macro = (
         parsed.macronutrient_split.carbs
@@ -347,19 +395,10 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     client = genai.Client(api_key=api_key)
     prompt = _build_chat_prompt(payload)
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_json_schema": GeminiChatResponse.model_json_schema(),
-            },
-        )
-        parsed = GeminiChatResponse.model_validate_json(response.text or "{}")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Gemini inference failed: {str(exc)}"
-        ) from exc
+    parsed = await _generate_structured_json(
+        client=client,
+        contents=prompt,
+        schema_model=GeminiChatResponse,
+    )
 
     return ChatResponse(llm_response=parsed.llm_response.strip())
