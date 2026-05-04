@@ -493,37 +493,26 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
     per_meal_calories = remaining_calories // remaining_meals_count
 
     # Use Gemini to suggest foods
-    # Temporarily disabled for debugging
-    # api_key = os.getenv("GEMINI_API_KEY")
-    # if not api_key:
-    #     raise HTTPException(status_code=500, detail="Server is missing GEMINI_API_KEY environment variable.")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Server is missing GEMINI_API_KEY environment variable.")
 
-    # client = genai.Client(api_key=api_key)
-    # meals_data = [{"mealName": name, "calorieTarget": per_meal_calories} for name in remaining_names]
-    # prompt = (
-    #     "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
-    #     "Consider meal times and nutritional balance. "
-    #     "For each meal, provide mealName, suggestedFoods (list of food items), calorieTarget. "
-    #     f"Meals: {meals_data}"
-    # )
+    client = genai.Client(api_key=api_key)
+    meals_data = [{"mealName": name, "calorieTarget": per_meal_calories} for name in remaining_names]
+    prompt = (
+        "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
+        "Consider meal times and nutritional balance. "
+        "For each meal, provide mealName, suggestedFoods (list of food items), calorieTarget. "
+        f"Meals: {meals_data}"
+    )
 
-    # parsed = await _generate_structured_json(
-    #     client=client,
-    #     contents=prompt,
-    #     schema_model=GeminiMealSuggestionsResponse,
-    # )
+    parsed = await _generate_structured_json(
+        client=client,
+        contents=prompt,
+        schema_model=GeminiMealSuggestionsResponse,
+    )
 
-    # adapted_targets = parsed.suggestions
-
-    # Dummy response for testing
-    adapted_targets = [
-        AdaptedMeal(
-            mealName=name,
-            suggestedFoods=["grilled chicken", "brown rice", "vegetables"],
-            calorieTarget=per_meal_calories
-        )
-        for name in remaining_names
-    ]
+    adapted_targets = parsed.suggestions
 
     return AdjustMealPlanResponse(
         remaining_calorie_allowance=remaining_calories,
