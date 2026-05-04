@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from io import BytesIO
-from typing import Any, Dict, List, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from google import genai
@@ -57,8 +57,8 @@ class AdjustMealPlanResponse(BaseModel):
     remaining_calorie_allowance: int
     remaining_meals: int
     adapted_calorie_targets: List[AdaptedMeal]
-    warning: str | None = None
-    message: str | None = None
+    warning: Optional[str] = None
+    message: Optional[str] = None
 
 
 class GeminiMealSuggestion(BaseModel):
