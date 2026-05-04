@@ -39,9 +39,11 @@ Optional reliability variables:
 {
   "detected_items": ["grilled chicken", "rice"],
   "confidence_scores": [95.4, 91.2],
-  "calories": [320, 210],
+  "calories": {
+    "grilled chicken": 320,
+    "rice": 210
+  },
   "total_calories": 530,
-  "bounding_boxes": [[32, 114, 420, 620], [430, 100, 760, 700]],
   "query_keys": ["grilled_chicken", "rice"]
 }
 ```
