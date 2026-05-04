@@ -21,6 +21,7 @@ SUPPORTED_MIME_TYPES = {
 class GeminiDetection(BaseModel):
     food_name: str = Field(description="Detected food item name")
     confidence: float = Field(description="Confidence as a percentage from 0 to 100")
+    calories: int = Field(ge=0, le=3000, description="Estimated calories for this food item")
     box_2d: List[float] = Field(
         description="Bounding box in [ymin, xmin, ymax, xmax], normalized to 0..1000"
     )
@@ -33,6 +34,8 @@ class GeminiDetectionResponse(BaseModel):
 class RecognizeFoodResponse(BaseModel):
     detected_items: List[str]
     confidence_scores: List[float]
+    calories: List[int]
+    total_calories: int
     bounding_boxes: List[List[int]]
     query_keys: List[str]
 
@@ -122,7 +125,7 @@ def _build_prompt() -> str:
         "Detect all visible food items in the image. "
         "Return one detection per item. "
         "For each item, provide: "
-        "food_name, confidence (0..100), "
+        "food_name, confidence (0..100), calories, "
         "and box_2d=[ymin, xmin, ymax, xmax] normalized to 0..1000. "
         "Do not include non-food objects."
     )
@@ -303,6 +306,7 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
 
     detected_items: List[str] = []
     confidence_scores: List[float] = []
+    calories: List[int] = []
     bounding_boxes: List[List[int]] = []
     query_keys: List[str] = []
 
@@ -312,12 +316,17 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
             continue
         detected_items.append(item)
         confidence_scores.append(round(max(0.0, min(100.0, det.confidence)), 2))
+        calories.append(int(round(max(0, det.calories))))
         bounding_boxes.append(_norm_to_abs_box(det.box_2d, width=width, height=height))
         query_keys.append(_to_query_key(item))
+
+    total_calories = sum(calories)
 
     return RecognizeFoodResponse(
         detected_items=detected_items,
         confidence_scores=confidence_scores,
+        calories=calories,
+        total_calories=total_calories,
         bounding_boxes=bounding_boxes,
         query_keys=query_keys,
     )
