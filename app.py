@@ -36,6 +36,41 @@ class RecognizeFoodResponse(BaseModel):
     query_keys: List[str]
 
 
+class ConsumedMeal(BaseModel):
+    mealName: str = Field(min_length=1, max_length=64)
+    caloriesConsumed: int = Field(ge=0)
+
+
+class AdjustMealPlanRequest(BaseModel):
+    dailyCalorieGoal: int = Field(gt=0)
+    totalMealsPlanned: int = Field(gt=0)
+    consumedMeals: List[ConsumedMeal] = Field(default_factory=list)
+
+
+class AdaptedMeal(BaseModel):
+    mealName: str
+    suggestedFoods: List[str]
+    calorieTarget: int
+
+
+class AdjustMealPlanResponse(BaseModel):
+    remaining_calorie_allowance: int
+    remaining_meals: int
+    adapted_calorie_targets: List[AdaptedMeal]
+    warning: str | None = None
+    message: str | None = None
+
+
+class GeminiMealSuggestion(BaseModel):
+    mealName: str
+    suggestedFoods: List[str]
+    calorieTarget: int
+
+
+class GeminiMealSuggestionsResponse(BaseModel):
+    suggestions: List[GeminiMealSuggestion] = Field(default_factory=list)
+
+
 class GenerateMealPlanRequest(BaseModel):
     age: int = Field(ge=1, le=120)
     gender: str = Field(min_length=1, max_length=32)
@@ -178,6 +213,17 @@ def _default_macro_split(activity_level: str) -> MacroSplit:
     if key == "sedentary":
         return MacroSplit(carbs=40, proteins=30, fats=30)
     return MacroSplit(carbs=45, proteins=30, fats=25)
+
+
+def _get_meal_names(total_meals: int) -> List[str]:
+    if total_meals == 3:
+        return ["Breakfast", "Lunch", "Dinner"]
+    elif total_meals == 4:
+        return ["Breakfast", "Lunch", "Dinner", "Snack"]
+    elif total_meals == 5:
+        return ["Breakfast", "Lunch", "Dinner", "Snack", "Dessert"]
+    else:
+        return [f"Meal {i+1}" for i in range(1, total_meals + 1)]
 
 
 def _build_chat_prompt(payload: ChatRequest) -> str:
@@ -403,3 +449,73 @@ async def chat(payload: ChatRequest) -> ChatResponse:
     )
 
     return ChatResponse(llm_response=parsed.llm_response.strip())
+
+
+@app.post("/api/ml/adjust_meal_plan", response_model=AdjustMealPlanResponse)
+async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResponse:
+    # Input validation
+    if payload.dailyCalorieGoal <= 0 or payload.totalMealsPlanned <= 0:
+        raise HTTPException(status_code=400, detail="dailyCalorieGoal and totalMealsPlanned must be positive numbers.")
+    for meal in payload.consumedMeals:
+        if meal.caloriesConsumed < 0:
+            raise HTTPException(status_code=400, detail="caloriesConsumed cannot be negative.")
+
+    total_consumed = sum(meal.caloriesConsumed for meal in payload.consumedMeals)
+    remaining_calories = max(0, payload.dailyCalorieGoal - total_consumed)
+    consumed_count = len(payload.consumedMeals)
+    remaining_meals_count = payload.totalMealsPlanned - consumed_count
+
+    if remaining_meals_count <= 0:
+        return AdjustMealPlanResponse(
+            remaining_calorie_allowance=remaining_calories,
+            remaining_meals=0,
+            adapted_calorie_targets=[],
+            message="All planned meals are completed."
+        )
+
+    all_meal_names = _get_meal_names(payload.totalMealsPlanned)
+    consumed_names = {meal.mealName for meal in payload.consumedMeals}
+    remaining_names = [name for name in all_meal_names if name not in consumed_names][:remaining_meals_count]
+
+    if remaining_calories == 0 and total_consumed > payload.dailyCalorieGoal:
+        adapted_targets = [
+            AdaptedMeal(mealName=name, suggestedFoods=[], calorieTarget=0)
+            for name in remaining_names
+        ]
+        warning = "Calorie goal exceeded."
+        return AdjustMealPlanResponse(
+            remaining_calorie_allowance=remaining_calories,
+            remaining_meals=remaining_meals_count,
+            adapted_calorie_targets=adapted_targets,
+            warning=warning
+        )
+
+    per_meal_calories = remaining_calories // remaining_meals_count
+
+    # Use Gemini to suggest foods
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Server is missing GEMINI_API_KEY environment variable.")
+
+    client = genai.Client(api_key=api_key)
+    meals_data = [{"mealName": name, "calorieTarget": per_meal_calories} for name in remaining_names]
+    prompt = (
+        "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
+        "Consider meal times and nutritional balance. "
+        "For each meal, provide mealName, suggestedFoods (list of food items), calorieTarget. "
+        f"Meals: {meals_data}"
+    )
+
+    parsed = await _generate_structured_json(
+        client=client,
+        contents=prompt,
+        schema_model=GeminiMealSuggestionsResponse,
+    )
+
+    adapted_targets = parsed.suggestions
+
+    return AdjustMealPlanResponse(
+        remaining_calorie_allowance=remaining_calories,
+        remaining_meals=remaining_meals_count,
+        adapted_calorie_targets=adapted_targets
+    )

@@ -14,6 +14,7 @@ This Space exposes:
 - `POST /api/ml/recognize_food`
 - `POST /api/ml/generate_meal_plan`
 - `POST /api/ml/chat`
+- `POST /api/ml/adjust_meal_plan`
 
 ## Environment Secret
 
@@ -88,6 +89,44 @@ Response body:
 ```json
 {
   "llm_response": "You can have grilled chicken with quinoa and steamed vegetables, keep sodium low by avoiding packaged sauces, and stay within your remaining calorie budget."
+}
+```
+
+## Adjust Meal Plan API
+
+`POST /api/ml/adjust_meal_plan`
+
+Request body:
+
+```json
+{
+  "dailyCalorieGoal": 2000,
+  "totalMealsPlanned": 4,
+  "consumedMeals": [
+    {"mealName": "Breakfast", "caloriesConsumed": 400},
+    {"mealName": "Lunch", "caloriesConsumed": 600}
+  ]
+}
+```
+
+Response body:
+
+```json
+{
+  "remaining_calorie_allowance": 1000,
+  "remaining_meals": 2,
+  "adapted_calorie_targets": [
+    {
+      "mealName": "Dinner",
+      "suggestedFoods": ["grilled salmon", "quinoa", "broccoli"],
+      "calorieTarget": 500
+    },
+    {
+      "mealName": "Snack",
+      "suggestedFoods": ["apple", "handful of almonds"],
+      "calorieTarget": 500
+    }
+  ]
 }
 ```
 
