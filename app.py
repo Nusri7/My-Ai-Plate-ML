@@ -508,7 +508,7 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
 
     parsed = await _generate_structured_json(
         client=client,
-        contents=prompt,
+        contents=[prompt],
         schema_model=GeminiMealSuggestionsResponse,
     )
 
