@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from google import genai
 from google.genai import types
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field
 
 
 SUPPORTED_MIME_TYPES = {
@@ -67,8 +67,8 @@ class GeminiMealSuggestion(BaseModel):
     calorieTarget: int
 
 
-class GeminiMealSuggestionsResponse(RootModel[List[GeminiMealSuggestion]]):
-    pass
+class GeminiMealSuggestionsResponse(BaseModel):
+    suggestions: List[GeminiMealSuggestion] = Field(default_factory=list)
 
 
 class GenerateMealPlanRequest(BaseModel):
@@ -502,7 +502,7 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
     prompt = (
         "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
         "Consider meal times and nutritional balance. "
-        "For each meal, provide mealName, suggestedFoods (list of food items), calorieTarget. "
+        "Output a JSON object with 'suggestions' as a list of objects, each with mealName, suggestedFoods (list of food items), calorieTarget. "
         f"Meals: {meals_data}"
     )
 
@@ -512,7 +512,9 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
         schema_model=GeminiMealSuggestionsResponse,
     )
 
-    adapted_targets = parsed.root
+    adapted_targets = [
+        AdaptedMeal(**suggestion.model_dump()) for suggestion in parsed.suggestions
+    ]
 
     return AdjustMealPlanResponse(
         remaining_calorie_allowance=remaining_calories,
