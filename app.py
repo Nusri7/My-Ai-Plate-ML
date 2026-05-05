@@ -6,7 +6,7 @@ import re
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
-import openai
+from openai import OpenAI
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
@@ -248,15 +248,14 @@ def _openrouter_base_url() -> str:
     return os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 
 
-def _ensure_openrouter_api_key() -> None:
+def _get_openrouter_client() -> OpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise HTTPException(
             status_code=500,
             detail="Server is missing OPENROUTER_API_KEY environment variable.",
         )
-    openai.api_key = api_key
-    openai.api_base = _openrouter_base_url()
+    return OpenAI(api_key=api_key, base_url=_openrouter_base_url())
 
 
 def _extract_json_from_text(text: str) -> Any:
@@ -275,7 +274,7 @@ async def _generate_structured_json(
     contents: str,
     schema_model: Type[T],
 ) -> T:
-    _ensure_openrouter_api_key()
+    client = _get_openrouter_client()
     messages = [
         {
             "role": "system",
@@ -285,13 +284,13 @@ async def _generate_structured_json(
     ]
 
     def _call_openrouter() -> str:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model=_openrouter_model(),
             messages=messages,
             temperature=0.0,
             max_tokens=1600,
         )
-        return response.choices[0].message["content"]
+        return response.choices[0].message.content
 
     raw_text = await asyncio.to_thread(_call_openrouter)
     parsed_json = _extract_json_from_text(raw_text)
@@ -328,7 +327,7 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     image_media_type = image_file.content_type or "image/jpeg"
 
-    _ensure_openrouter_api_key()
+    client = _get_openrouter_client()
     messages = [
         {
             "role": "user",
@@ -343,13 +342,13 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
     ]
 
     def _call_openrouter_vision() -> str:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model=_openrouter_model(),
             messages=messages,
             temperature=0.0,
             max_tokens=1600,
         )
-        return response.choices[0].message["content"]
+        return response.choices[0].message.content
 
     raw_text = await asyncio.to_thread(_call_openrouter_vision)
     parsed_json = _extract_json_from_text(raw_text)
