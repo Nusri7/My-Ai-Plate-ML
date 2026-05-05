@@ -241,7 +241,8 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
 
 
 def _openrouter_model() -> str:
-    return os.getenv("OPENROUTER_MODEL", "google/gemini-3-flash-preview")
+    return os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+
 
 
 def _openrouter_base_url() -> str:

@@ -24,8 +24,9 @@ Set this secret in Hugging Face Space Settings:
 
 Optional settings:
 
-- `OPENROUTER_MODEL` (default: `google/gemini-3-flash-preview`)
+- `OPENROUTER_MODEL` (default: `openai/gpt-4o-mini`)
 - `OPENROUTER_API_BASE` (default: `https://openrouter.ai/api/v1`)
+
 
 ## Request
 
