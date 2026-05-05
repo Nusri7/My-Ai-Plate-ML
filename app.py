@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -7,8 +8,6 @@ from typing import Any, Dict, List, Optional, Type, TypeVar
 
 import openai
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from google import genai
-from google.genai import types
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -325,28 +324,36 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
     except UnidentifiedImageError as exc:
         raise HTTPException(status_code=400, detail="Invalid image file.") from exc
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Server is missing GEMINI_API_KEY environment variable.",
+    # Convert image to base64
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+    image_media_type = image_file.content_type or "image/jpeg"
+
+    _ensure_openrouter_api_key()
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": image_media_type, "data": base64_image},
+                },
+                {"type": "text", "text": _build_prompt()},
+            ],
+        }
+    ]
+
+    def _call_openrouter_vision() -> str:
+        response = openai.ChatCompletion.create(
+            model=_openrouter_model(),
+            messages=messages,
+            temperature=0.0,
+            max_tokens=1600,
         )
+        return response.choices[0].message["content"]
 
-    client = genai.Client(api_key=api_key)
-    image_part = types.Part.from_bytes(
-        data=image_bytes,
-        mime_type=image_file.content_type,
-    )
-
-    response = client.models.generate_content(
-        model=os.getenv("GEMINI_DETECTION_MODEL", "gemini-2.5-flash"),
-        contents=[image_part, _build_prompt()],
-        config={
-            "response_mime_type": "application/json",
-            "response_json_schema": GeminiDetectionResponse.model_json_schema(),
-        },
-    )
-    parsed = GeminiDetectionResponse.model_validate_json(response.text or "{}")
+    raw_text = await asyncio.to_thread(_call_openrouter_vision)
+    parsed_json = _extract_json_from_text(raw_text)
+    parsed = GeminiDetectionResponse.model_validate(parsed_json)
 
     detected_items: List[str] = []
     confidence_scores: List[float] = []

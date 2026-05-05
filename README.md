@@ -27,10 +27,6 @@ Optional settings:
 - `OPENROUTER_MODEL` (default: `google/gemma-4-26b-a4b-it:free`)
 - `OPENROUTER_API_BASE` (default: `https://openrouter.ai/api/v1`)
 
-If you also use the image recognition endpoint, retain:
-
-- `GEMINI_API_KEY` = your Google Gemini API key
-
 ## Request
 
 `multipart/form-data`
