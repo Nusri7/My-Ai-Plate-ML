@@ -259,15 +259,24 @@ def _get_openrouter_client() -> OpenAI:
 
 
 def _extract_json_from_text(text: str) -> Any:
+    if not text or not isinstance(text, str):
+        raise ValueError(f"Expected non-empty string, got: {repr(text)}")
+    
     text = text.strip()
+    if not text:
+        raise ValueError("Response text is empty")
+    
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(text[start : end + 1])
-        raise
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                raise ValueError(f"Could not extract valid JSON from response: {text[:200]}")
+        raise ValueError(f"No JSON object found in response: {text[:200]}")
 
 
 async def _generate_structured_json(
@@ -278,23 +287,32 @@ async def _generate_structured_json(
     messages = [
         {
             "role": "system",
-            "content": "You are a strict JSON generator. Output only valid JSON that matches the requested schema.",
+            "content": "You are a strict JSON generator. Output ONLY valid JSON, nothing else. No markdown, no explanations.",
         },
         {"role": "user", "content": contents},
     ]
 
     def _call_openrouter() -> str:
-        response = client.chat.completions.create(
-            model=_openrouter_model(),
-            messages=messages,
-            temperature=0.0,
-            max_tokens=1600,
-        )
-        return response.choices[0].message.content
+        try:
+            response = client.chat.completions.create(
+                model=_openrouter_model(),
+                messages=messages,
+                temperature=0.0,
+                max_tokens=1600,
+            )
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("OpenRouter returned empty response")
+            return content
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"OpenRouter API error: {str(e)}")
 
     raw_text = await asyncio.to_thread(_call_openrouter)
-    parsed_json = _extract_json_from_text(raw_text)
-    return schema_model.model_validate(parsed_json)
+    try:
+        parsed_json = _extract_json_from_text(raw_text)
+        return schema_model.model_validate(parsed_json)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to parse response: {str(e)}")
 
 
 @app.get("/health")
@@ -342,17 +360,28 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
     ]
 
     def _call_openrouter_vision() -> str:
-        response = client.chat.completions.create(
-            model=_openrouter_model(),
-            messages=messages,
-            temperature=0.0,
-            max_tokens=1600,
-        )
-        return response.choices[0].message.content
+        try:
+            response = client.chat.completions.create(
+                model=_openrouter_model(),
+                messages=messages,
+                temperature=0.0,
+                max_tokens=1600,
+            )
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("OpenRouter returned empty response for image")
+            return content
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"OpenRouter image API error: {str(e)}")
 
     raw_text = await asyncio.to_thread(_call_openrouter_vision)
-    parsed_json = _extract_json_from_text(raw_text)
-    parsed = GeminiDetectionResponse.model_validate(parsed_json)
+    try:
+        parsed_json = _extract_json_from_text(raw_text)
+        parsed = GeminiDetectionResponse.model_validate(parsed_json)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to parse image response: {str(e)}")
 
     detected_items: List[str] = []
     confidence_scores: List[float] = []
