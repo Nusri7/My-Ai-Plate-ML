@@ -241,7 +241,7 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
 
 
 def _openrouter_model() -> str:
-    return os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
+    return os.getenv("OPENROUTER_MODEL", "google/gemini-3-flash-preview")
 
 
 def _openrouter_base_url() -> str:

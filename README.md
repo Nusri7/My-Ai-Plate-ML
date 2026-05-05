@@ -24,7 +24,7 @@ Set this secret in Hugging Face Space Settings:
 
 Optional settings:
 
-- `OPENROUTER_MODEL` (default: `google/gemma-4-26b-a4b-it:free`)
+- `OPENROUTER_MODEL` (default: `google/gemini-3-flash-preview`)
 - `OPENROUTER_API_BASE` (default: `https://openrouter.ai/api/v1`)
 
 ## Request
