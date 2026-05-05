@@ -190,6 +190,25 @@ def _build_meal_plan_prompt(
 ) -> str:
     allergies = ", ".join(req.allergies) if req.allergies else "none"
     prefs = ", ".join(req.dietary_preferences) if req.dietary_preferences else "none"
+    
+    # --- FIXED SCHEMA PROMPT START ---
+    expected_json_format = """
+    {
+      "target_daily_calories": 2000,
+      "macronutrient_split": {
+        "carbs": 45,
+        "proteins": 30,
+        "fats": 25
+      },
+      "recommended_plan": {
+        "breakfast": [{"food": "Example Food", "portion": "1 cup", "calories": 300}],
+        "lunch": [{"food": "Example Food", "portion": "1 bowl", "calories": 500}],
+        "dinner": [{"food": "Example Food", "portion": "1 plate", "calories": 600}],
+        "snacks": [{"food": "Example Snack", "portion": "1 piece", "calories": 150}]
+      }
+    }
+    """
+
     return (
         "Create a safe personalized 1-day meal plan.\n"
         "Requirements:\n"
@@ -202,9 +221,10 @@ def _build_meal_plan_prompt(
         f"- Dietary preferences: {prefs}\n"
         f"- Target calories: {target_calories}\n"
         f"- Macro split target (%): carbs {macro_hint.carbs}, proteins {macro_hint.proteins}, fats {macro_hint.fats}\n"
-        "Output only valid JSON matching schema. Avoid allergy ingredients completely. "
-        "Provide practical foods with clear portions and calories."
+        f"Output ONLY valid JSON matching this exact structure:\n{expected_json_format}\n"
+        "Avoid allergy ingredients completely. Provide practical foods with clear portions and calories."
     )
+    # --- FIXED SCHEMA PROMPT END ---
 
 
 def _default_macro_split(activity_level: str) -> MacroSplit:
@@ -347,7 +367,7 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
 
     client = _get_openrouter_client()
     
-    # --- FIXED MESSAGES PAYLOAD START ---
+    # --- FIXED MESSAGES PAYLOAD START (Image Recognition Fix) ---
     messages = [
         {
             "role": "system",
