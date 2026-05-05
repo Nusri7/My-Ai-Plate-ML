@@ -244,7 +244,6 @@ def _openrouter_model() -> str:
     return os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 
 
-
 def _openrouter_base_url() -> str:
     return os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 
@@ -347,18 +346,31 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
     image_media_type = image_file.content_type or "image/jpeg"
 
     client = _get_openrouter_client()
+    
+    # --- FIXED MESSAGES PAYLOAD START ---
     messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a strict JSON generator. Output ONLY valid JSON, nothing else. "
+                "Your output must be a JSON object with a single key 'detections' containing a list of objects. "
+                "Each object must have 'food_name' (string), 'confidence' (float 0-100), and 'calories' (integer)."
+            ),
+        },
         {
             "role": "user",
             "content": [
                 {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": image_media_type, "data": base64_image},
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image_media_type};base64,{base64_image}"
+                    },
                 },
                 {"type": "text", "text": _build_prompt()},
             ],
         }
     ]
+    # --- FIXED MESSAGES PAYLOAD END ---
 
     def _call_openrouter_vision() -> str:
         try:
