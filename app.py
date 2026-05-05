@@ -1,9 +1,11 @@
 import asyncio
+import json
 import os
 import re
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
+import openai
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from google import genai
 from google.genai import types
@@ -131,7 +133,7 @@ T = TypeVar("T", bound=BaseModel)
 app = FastAPI(
     title="MyAiPlate ML Microservice",
     version="1.0.0",
-    description="Gemini-powered food recognition API",
+    description="OpenRouter-powered food recognition API",
 )
 
 
@@ -232,72 +234,69 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
         "Answer the user's question using the provided context. "
         "Respect strict health constraints and allergies from context. "
         "Do not suggest foods that violate constraints. "
-        "If context is insufficient, state assumptions briefly.\n\n"
+        "If context is insufficient, state assumptions briefly. "
+        "Output only valid JSON with a single field named llm_response.\n\n"
         f"User question:\n{payload.user_prompt}\n\n"
         f"User context object:\n{payload.user_context}"
     )
 
 
-def _gemini_models() -> List[str]:
-    configured = os.getenv("GEMINI_MODELS", "gemini-2.5-flash,gemini-2.0-flash")
-    models = [m.strip() for m in configured.split(",") if m.strip()]
-    return models if models else ["gemini-2.5-flash"]
+def _openrouter_model() -> str:
+    return os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
 
 
-def _is_retryable_gemini_error(message: str) -> bool:
-    upper = message.upper()
-    retry_tokens = [
-        "503",
-        "UNAVAILABLE",
-        "429",
-        "RESOURCE_EXHAUSTED",
-        "DEADLINE_EXCEEDED",
-        "INTERNAL",
-    ]
-    return any(token in upper for token in retry_tokens)
+def _openrouter_base_url() -> str:
+    return os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+
+
+def _ensure_openrouter_api_key() -> None:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Server is missing OPENROUTER_API_KEY environment variable.",
+        )
+    openai.api_key = api_key
+    openai.api_base = _openrouter_base_url()
+
+
+def _extract_json_from_text(text: str) -> Any:
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start : end + 1])
+        raise
 
 
 async def _generate_structured_json(
-    client: genai.Client,
-    contents: Any,
+    contents: str,
     schema_model: Type[T],
 ) -> T:
-    models = _gemini_models()
-    max_retries = max(1, int(os.getenv("GEMINI_MAX_RETRIES", "3")))
-    base_delay = max(0.2, float(os.getenv("GEMINI_RETRY_BASE_DELAY_SEC", "1.5")))
-    last_error = "unknown error"
+    _ensure_openrouter_api_key()
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a strict JSON generator. Output only valid JSON that matches the requested schema.",
+        },
+        {"role": "user", "content": contents},
+    ]
 
-    for model in models:
-        for attempt in range(1, max_retries + 1):
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_json_schema": schema_model.model_json_schema(),
-                    },
-                )
-                return schema_model.model_validate_json(response.text or "{}")
-            except Exception as exc:
-                last_error = str(exc)
-                retryable = _is_retryable_gemini_error(last_error)
-                if retryable and attempt < max_retries:
-                    await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
-                    continue
-                if retryable:
-                    break
-                raise HTTPException(
-                    status_code=502, detail=f"Gemini inference failed: {last_error}"
-                ) from exc
+    def _call_openrouter() -> str:
+        response = openai.ChatCompletion.create(
+            model=_openrouter_model(),
+            messages=messages,
+            temperature=0.0,
+            max_tokens=1600,
+        )
+        return response.choices[0].message["content"]
 
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "Gemini is temporarily unavailable after retries. "
-            f"Models tried: {', '.join(models)}. Last error: {last_error}"
-        ),
-    )
+    raw_text = await asyncio.to_thread(_call_openrouter)
+    parsed_json = _extract_json_from_text(raw_text)
+    return schema_model.model_validate(parsed_json)
 
 
 @app.get("/health")
@@ -339,11 +338,15 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
         mime_type=image_file.content_type,
     )
 
-    parsed = await _generate_structured_json(
-        client=client,
+    response = client.models.generate_content(
+        model=os.getenv("GEMINI_DETECTION_MODEL", "gemini-2.5-flash"),
         contents=[image_part, _build_prompt()],
-        schema_model=GeminiDetectionResponse,
+        config={
+            "response_mime_type": "application/json",
+            "response_json_schema": GeminiDetectionResponse.model_json_schema(),
+        },
     )
+    parsed = GeminiDetectionResponse.model_validate_json(response.text or "{}")
 
     detected_items: List[str] = []
     confidence_scores: List[float] = []
@@ -374,13 +377,6 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
 async def generate_meal_plan(
     payload: GenerateMealPlanRequest,
 ) -> GenerateMealPlanResponse:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Server is missing GEMINI_API_KEY environment variable.",
-        )
-
     target_calories = _estimate_calories(
         age=payload.age,
         gender=payload.gender,
@@ -390,11 +386,9 @@ async def generate_meal_plan(
     )
     macro_hint = _default_macro_split(payload.activity_level)
 
-    client = genai.Client(api_key=api_key)
     prompt = _build_meal_plan_prompt(payload, target_calories, macro_hint)
 
     parsed = await _generate_structured_json(
-        client=client,
         contents=prompt,
         schema_model=GeminiMealPlanResponse,
     )
@@ -432,18 +426,9 @@ async def generate_meal_plan(
 
 @app.post("/api/ml/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest) -> ChatResponse:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Server is missing GEMINI_API_KEY environment variable.",
-        )
-
-    client = genai.Client(api_key=api_key)
     prompt = _build_chat_prompt(payload)
 
     parsed = await _generate_structured_json(
-        client=client,
         contents=prompt,
         schema_model=GeminiChatResponse,
     )
@@ -492,12 +477,6 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
 
     per_meal_calories = remaining_calories // remaining_meals_count
 
-    # Use Gemini to suggest foods
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Server is missing GEMINI_API_KEY environment variable.")
-
-    client = genai.Client(api_key=api_key)
     meals_data = [{"mealName": name, "calorieTarget": per_meal_calories} for name in remaining_names]
     prompt = (
         "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
@@ -507,8 +486,7 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
     )
 
     parsed = await _generate_structured_json(
-        client=client,
-        contents=[prompt],
+        contents=prompt,
         schema_model=GeminiMealSuggestionsResponse,
     )
 

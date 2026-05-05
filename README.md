@@ -20,13 +20,16 @@ This Space exposes:
 
 Set this secret in Hugging Face Space Settings:
 
+- `OPENROUTER_API_KEY` = your OpenRouter API key
+
+Optional settings:
+
+- `OPENROUTER_MODEL` (default: `google/gemma-4-26b-a4b-it:free`)
+- `OPENROUTER_API_BASE` (default: `https://openrouter.ai/api/v1`)
+
+If you also use the image recognition endpoint, retain:
+
 - `GEMINI_API_KEY` = your Google Gemini API key
-
-Optional reliability variables:
-
-- `GEMINI_MODELS` (default: `gemini-2.5-flash,gemini-2.0-flash`)
-- `GEMINI_MAX_RETRIES` (default: `3`)
-- `GEMINI_RETRY_BASE_DELAY_SEC` (default: `1.5`)
 
 ## Request
 
