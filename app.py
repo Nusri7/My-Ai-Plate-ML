@@ -336,11 +336,56 @@ def _extract_json_from_text(text: str) -> Any:
         raise ValueError(f"Could not extract valid JSON from response: {text[:300]}")
 
 
+def _json_repair_instruction(schema_model: Type[T]) -> str:
+    schema = json.dumps(schema_model.model_json_schema(), ensure_ascii=True)
+    return (
+        "Your previous output was invalid JSON. "
+        "Return ONLY valid JSON object. No markdown, no code fences, no explanation. "
+        f"Must match this JSON Schema exactly: {schema}"
+    )
+
+
+async def _request_and_validate_json(
+    base_messages: List[Dict[str, Any]],
+    schema_model: Type[T],
+    error_prefix: str,
+) -> T:
+    client = _get_openrouter_client()
+    messages = list(base_messages)
+    max_attempts = 3
+    last_error = "unknown error"
+
+    def _call_once(msgs: List[Dict[str, Any]]) -> str:
+        response = client.chat.completions.create(
+            model=_openrouter_model(),
+            messages=msgs,
+            temperature=0.0,
+            max_tokens=1600,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("OpenRouter returned empty response")
+        return content
+
+    for attempt in range(max_attempts):
+        try:
+            raw_text = await asyncio.to_thread(_call_once, messages)
+            parsed_json = _extract_json_from_text(raw_text)
+            return schema_model.model_validate(parsed_json)
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt == max_attempts - 1:
+                break
+            messages.append({"role": "user", "content": _json_repair_instruction(schema_model)})
+
+    raise HTTPException(status_code=502, detail=f"{error_prefix}: {last_error}")
+
+
 async def _generate_structured_json(
     contents: str,
     schema_model: Type[T],
 ) -> T:
-    client = _get_openrouter_client()
     messages = [
         {
             "role": "system",
@@ -348,29 +393,11 @@ async def _generate_structured_json(
         },
         {"role": "user", "content": contents},
     ]
-
-    def _call_openrouter() -> str:
-        try:
-            response = client.chat.completions.create(
-                model=_openrouter_model(),
-                messages=messages,
-                temperature=0.0,
-                max_tokens=1600,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content
-            if not content:
-                raise ValueError("OpenRouter returned empty response")
-            return content
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OpenRouter API error: {str(e)}")
-
-    raw_text = await asyncio.to_thread(_call_openrouter)
-    try:
-        parsed_json = _extract_json_from_text(raw_text)
-        return schema_model.model_validate(parsed_json)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to parse response: {str(e)}")
+    return await _request_and_validate_json(
+        base_messages=messages,
+        schema_model=schema_model,
+        error_prefix="Failed to parse response",
+    )
 
 
 @app.get("/health")
@@ -403,8 +430,6 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
     base64_image = base64.b64encode(image_bytes).decode("utf-8")
     image_media_type = image_file.content_type or "image/jpeg"
 
-    client = _get_openrouter_client()
-    
     # --- FIXED MESSAGES PAYLOAD START (Image Recognition Fix) ---
     messages = [
         {
@@ -429,31 +454,11 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
         }
     ]
     # --- FIXED MESSAGES PAYLOAD END ---
-
-    def _call_openrouter_vision() -> str:
-        try:
-            response = client.chat.completions.create(
-                model=_openrouter_model(),
-                messages=messages,
-                temperature=0.0,
-                max_tokens=1600,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content
-            if not content:
-                raise ValueError("OpenRouter returned empty response for image")
-            return content
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OpenRouter image API error: {str(e)}")
-
-    raw_text = await asyncio.to_thread(_call_openrouter_vision)
-    try:
-        parsed_json = _extract_json_from_text(raw_text)
-        parsed = GeminiDetectionResponse.model_validate(parsed_json)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to parse image response: {str(e)}")
+    parsed = await _request_and_validate_json(
+        base_messages=messages,
+        schema_model=GeminiDetectionResponse,
+        error_prefix="Failed to parse image response",
+    )
 
     detected_items: List[str] = []
     confidence_scores: List[float] = []
