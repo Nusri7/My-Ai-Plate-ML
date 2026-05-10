@@ -260,21 +260,34 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
     )
 
 
-def _openrouter_models() -> List[str]:
-    configured = os.getenv("OPENROUTER_MODELS", "").strip()
-    if configured:
-        models = [m.strip() for m in configured.split(",") if m.strip()]
-    else:
-        primary = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-pro").strip()
-        fallback = os.getenv("OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o").strip()
-        models = [primary, fallback]
+def _unique_models(models: List[str]) -> List[str]:
     seen = set()
     ordered: List[str] = []
     for model in models:
         if model and model not in seen:
             seen.add(model)
             ordered.append(model)
-    return ordered if ordered else ["openai/gpt-4o"]
+    return ordered
+
+
+def _openrouter_image_models() -> List[str]:
+    configured = os.getenv("OPENROUTER_IMAGE_MODELS", "").strip()
+    if configured:
+        models = [m.strip() for m in configured.split(",") if m.strip()]
+        unique = _unique_models(models)
+        if unique:
+            return unique
+    return ["google/gemini-2.5-pro"]
+
+
+def _openrouter_text_models() -> List[str]:
+    configured = os.getenv("OPENROUTER_TEXT_MODELS", "").strip()
+    if configured:
+        models = [m.strip() for m in configured.split(",") if m.strip()]
+        unique = _unique_models(models)
+        if unique:
+            return unique
+    return ["openai/gpt-4o"]
 
 
 def _openrouter_base_url() -> str:
@@ -362,9 +375,12 @@ async def _request_and_validate_json(
     base_messages: List[Dict[str, Any]],
     schema_model: Type[T],
     error_prefix: str,
+    models: Optional[List[str]] = None,
 ) -> T:
     client = _get_openrouter_client()
-    models = _openrouter_models()
+    model_list = _unique_models(models or _openrouter_text_models())
+    if not model_list:
+        model_list = ["openai/gpt-4o"]
     max_attempts = max(1, int(os.getenv("OPENROUTER_MAX_ATTEMPTS_PER_MODEL", "2")))
     last_error = "unknown error"
 
@@ -393,7 +409,7 @@ async def _request_and_validate_json(
             raise ValueError("OpenRouter returned empty response")
         return content
 
-    for model_name in models:
+    for model_name in model_list:
         messages = list(base_messages)
         for attempt in range(max_attempts):
             try:
@@ -426,6 +442,7 @@ async def _generate_structured_json(
         base_messages=messages,
         schema_model=schema_model,
         error_prefix="Failed to parse response",
+        models=_openrouter_text_models(),
     )
 
 
@@ -487,6 +504,7 @@ async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodRes
         base_messages=messages,
         schema_model=GeminiDetectionResponse,
         error_prefix="Failed to parse image response",
+        models=_openrouter_image_models(),
     )
 
     detected_items: List[str] = []
