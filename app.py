@@ -7,9 +7,7 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from openai import OpenAI
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -128,14 +126,6 @@ class ChatResponse(BaseModel):
     llm_response: str
 
 
-class ApiResponse(BaseModel):
-    success: bool
-    code: int
-    message: str
-    data: Any = None
-    error: Optional[Dict[str, Any]] = None
-
-
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -144,63 +134,6 @@ app = FastAPI(
     version="1.0.0",
     description="OpenRouter-powered food recognition API",
 )
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=ApiResponse(
-            success=False,
-            code=exc.status_code,
-            message="Request failed",
-            data=None,
-            error={"details": exc.detail},
-        ).model_dump(),
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(
-    _: Request, exc: RequestValidationError
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=422,
-        content=ApiResponse(
-            success=False,
-            code=422,
-            message="Validation failed",
-            data=None,
-            error={"details": exc.errors()},
-        ).model_dump(),
-    )
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(
-        status_code=500,
-        content=ApiResponse(
-            success=False,
-            code=500,
-            message="Internal server error",
-            data=None,
-            error={"details": str(exc)},
-        ).model_dump(),
-    )
-
-
-def _success_response(data: Any, message: str, code: int = 200) -> JSONResponse:
-    return JSONResponse(
-        status_code=code,
-        content=ApiResponse(
-            success=True,
-            code=code,
-            message=message,
-            data=data,
-            error=None,
-        ).model_dump(),
-    )
 
 
 def _to_query_key(food_name: str) -> str:
@@ -314,44 +247,6 @@ def _get_meal_names(total_meals: int) -> List[str]:
         return [f"Meal {i+1}" for i in range(1, total_meals + 1)]
 
 
-def _meal_priority_weight(meal_name: str) -> float:
-    key = meal_name.strip().lower()
-    weights = {
-        "breakfast": 0.40,
-        "lunch": 0.30,
-        "dinner": 0.20,
-        "snack": 0.10,
-        "snacks": 0.10,
-    }
-    return weights.get(key, 0.10)
-
-
-def _distribute_calories_by_priority(
-    remaining_calories: int, meal_names: List[str]
-) -> Dict[str, int]:
-    if remaining_calories <= 0 or not meal_names:
-        return {name: 0 for name in meal_names}
-
-    raw_weights = [max(0.01, _meal_priority_weight(name)) for name in meal_names]
-    total_weight = sum(raw_weights)
-    normalized = [w / total_weight for w in raw_weights]
-
-    raw_targets = [remaining_calories * ratio for ratio in normalized]
-    final_targets = [int(target) for target in raw_targets]
-
-    remainder = remaining_calories - sum(final_targets)
-    if remainder > 0:
-        order = sorted(
-            range(len(meal_names)),
-            key=lambda i: (raw_targets[i] - final_targets[i], raw_weights[i]),
-            reverse=True,
-        )
-        for i in range(remainder):
-            final_targets[order[i % len(order)]] += 1
-
-    return {meal_names[i]: final_targets[i] for i in range(len(meal_names))}
-
-
 def _build_chat_prompt(payload: ChatRequest) -> str:
     return (
         "You are a nutrition assistant. "
@@ -366,7 +261,7 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
 
 
 def _openrouter_model() -> str:
-    return os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
+    return os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-pro")
 
 
 def _openrouter_base_url() -> str:
@@ -440,13 +335,13 @@ async def _generate_structured_json(
         raise HTTPException(status_code=502, detail=f"Failed to parse response: {str(e)}")
 
 
-@app.get("/health", response_model=ApiResponse)
-def health() -> JSONResponse:
-    return _success_response(data={"status": "ok"}, message="Health check passed")
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
 
 
-@app.post("/api/ml/recognize_food", response_model=ApiResponse)
-async def recognize_food(image_file: UploadFile = File(...)) -> JSONResponse:
+@app.post("/api/ml/recognize_food", response_model=RecognizeFoodResponse)
+async def recognize_food(image_file: UploadFile = File(...)) -> RecognizeFoodResponse:
     if image_file.content_type not in SUPPORTED_MIME_TYPES:
         raise HTTPException(
             status_code=400,
@@ -537,23 +432,19 @@ async def recognize_food(image_file: UploadFile = File(...)) -> JSONResponse:
 
     total_calories = sum(calories.values())
 
-    result = RecognizeFoodResponse(
+    return RecognizeFoodResponse(
         detected_items=detected_items,
         confidence_scores=confidence_scores,
         calories=calories,
         total_calories=total_calories,
         query_keys=query_keys,
     )
-    return _success_response(
-        data=result.model_dump(),
-        message="Food recognition completed",
-    )
 
 
-@app.post("/api/ml/generate_meal_plan", response_model=ApiResponse)
+@app.post("/api/ml/generate_meal_plan", response_model=GenerateMealPlanResponse)
 async def generate_meal_plan(
     payload: GenerateMealPlanRequest,
-) -> JSONResponse:
+) -> GenerateMealPlanResponse:
     target_calories = _estimate_calories(
         age=payload.age,
         gender=payload.gender,
@@ -594,16 +485,15 @@ async def generate_meal_plan(
         "Snacks": plan.get("snacks", []),
     }
 
-    result = GenerateMealPlanResponse(
+    return GenerateMealPlanResponse(
         target_daily_calories=parsed.target_daily_calories,
         macronutrient_split=macros,
         recommended_plan=categorized_plan,
     )
-    return _success_response(data=result.model_dump(), message="Meal plan generated")
 
 
-@app.post("/api/ml/chat", response_model=ApiResponse)
-async def chat(payload: ChatRequest) -> JSONResponse:
+@app.post("/api/ml/chat", response_model=ChatResponse)
+async def chat(payload: ChatRequest) -> ChatResponse:
     prompt = _build_chat_prompt(payload)
 
     parsed = await _generate_structured_json(
@@ -611,12 +501,11 @@ async def chat(payload: ChatRequest) -> JSONResponse:
         schema_model=GeminiChatResponse,
     )
 
-    result = ChatResponse(llm_response=parsed.llm_response.strip())
-    return _success_response(data=result.model_dump(), message="Chat response generated")
+    return ChatResponse(llm_response=parsed.llm_response.strip())
 
 
-@app.post("/api/ml/adjust_meal_plan", response_model=ApiResponse)
-async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> JSONResponse:
+@app.post("/api/ml/adjust_meal_plan", response_model=AdjustMealPlanResponse)
+async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResponse:
     # Input validation
     if payload.dailyCalorieGoal <= 0 or payload.totalMealsPlanned <= 0:
         raise HTTPException(status_code=400, detail="dailyCalorieGoal and totalMealsPlanned must be positive numbers.")
@@ -630,13 +519,12 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> JSONResponse:
     remaining_meals_count = payload.totalMealsPlanned - consumed_count
 
     if remaining_meals_count <= 0:
-        result = AdjustMealPlanResponse(
+        return AdjustMealPlanResponse(
             remaining_calorie_allowance=remaining_calories,
             remaining_meals=0,
             adapted_calorie_targets=[],
             message="All planned meals are completed."
         )
-        return _success_response(data=result.model_dump(), message="Meal plan adjusted")
 
     all_meal_names = _get_meal_names(payload.totalMealsPlanned)
     consumed_names = {meal.mealName for meal in payload.consumedMeals}
@@ -648,19 +536,16 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> JSONResponse:
             for name in remaining_names
         ]
         warning = "Calorie goal exceeded."
-        result = AdjustMealPlanResponse(
+        return AdjustMealPlanResponse(
             remaining_calorie_allowance=remaining_calories,
             remaining_meals=remaining_meals_count,
             adapted_calorie_targets=adapted_targets,
             warning=warning
         )
-        return _success_response(data=result.model_dump(), message="Meal plan adjusted")
 
-    calorie_targets = _distribute_calories_by_priority(remaining_calories, remaining_names)
-    meals_data = [
-        {"mealName": name, "calorieTarget": calorie_targets[name]}
-        for name in remaining_names
-    ]
+    per_meal_calories = remaining_calories // remaining_meals_count
+
+    meals_data = [{"mealName": name, "calorieTarget": per_meal_calories} for name in remaining_names]
     prompt = (
         "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
         "Consider meal times and nutritional balance. "
@@ -677,9 +562,8 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> JSONResponse:
         AdaptedMeal(**suggestion.model_dump()) for suggestion in parsed.suggestions
     ]
 
-    result = AdjustMealPlanResponse(
+    return AdjustMealPlanResponse(
         remaining_calorie_allowance=remaining_calories,
         remaining_meals=remaining_meals_count,
         adapted_calorie_targets=adapted_targets
     )
-    return _success_response(data=result.model_dump(), message="Meal plan adjusted")
