@@ -260,8 +260,21 @@ def _build_chat_prompt(payload: ChatRequest) -> str:
     )
 
 
-def _openrouter_model() -> str:
-    return os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-pro")
+def _openrouter_models() -> List[str]:
+    configured = os.getenv("OPENROUTER_MODELS", "").strip()
+    if configured:
+        models = [m.strip() for m in configured.split(",") if m.strip()]
+    else:
+        primary = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-pro").strip()
+        fallback = os.getenv("OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o").strip()
+        models = [primary, fallback]
+    seen = set()
+    ordered: List[str] = []
+    for model in models:
+        if model and model not in seen:
+            seen.add(model)
+            ordered.append(model)
+    return ordered if ordered else ["openai/gpt-4o"]
 
 
 def _openrouter_base_url() -> str:
@@ -351,33 +364,49 @@ async def _request_and_validate_json(
     error_prefix: str,
 ) -> T:
     client = _get_openrouter_client()
-    messages = list(base_messages)
-    max_attempts = 3
+    models = _openrouter_models()
+    max_attempts = max(1, int(os.getenv("OPENROUTER_MAX_ATTEMPTS_PER_MODEL", "2")))
     last_error = "unknown error"
 
-    def _call_once(msgs: List[Dict[str, Any]]) -> str:
-        response = client.chat.completions.create(
-            model=_openrouter_model(),
-            messages=msgs,
-            temperature=0.0,
-            max_tokens=1600,
-            response_format={"type": "json_object"},
-        )
+    def _call_once(msgs: List[Dict[str, Any]], model_name: str) -> str:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=msgs,
+                temperature=0.0,
+                max_tokens=1600,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "response_format" in msg and ("unsupported" in msg or "not support" in msg):
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=msgs,
+                    temperature=0.0,
+                    max_tokens=1600,
+                )
+            else:
+                raise
         content = response.choices[0].message.content
         if not content:
             raise ValueError("OpenRouter returned empty response")
         return content
 
-    for attempt in range(max_attempts):
-        try:
-            raw_text = await asyncio.to_thread(_call_once, messages)
-            parsed_json = _extract_json_from_text(raw_text)
-            return schema_model.model_validate(parsed_json)
-        except Exception as exc:
-            last_error = str(exc)
-            if attempt == max_attempts - 1:
-                break
-            messages.append({"role": "user", "content": _json_repair_instruction(schema_model)})
+    for model_name in models:
+        messages = list(base_messages)
+        for attempt in range(max_attempts):
+            try:
+                raw_text = await asyncio.to_thread(_call_once, messages, model_name)
+                parsed_json = _extract_json_from_text(raw_text)
+                return schema_model.model_validate(parsed_json)
+            except Exception as exc:
+                last_error = f"{model_name}: {str(exc)}"
+                if attempt == max_attempts - 1:
+                    break
+                messages.append(
+                    {"role": "user", "content": _json_repair_instruction(schema_model)}
+                )
 
     raise HTTPException(status_code=502, detail=f"{error_prefix}: {last_error}")
 
