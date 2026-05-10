@@ -383,25 +383,62 @@ def _get_openrouter_client() -> OpenAI:
     return OpenAI(api_key=api_key, base_url=_openrouter_base_url())
 
 
+def _strip_markdown_code_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned, count=1)
+        cleaned = re.sub(r"\s*```$", "", cleaned, count=1)
+    return cleaned.strip()
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    in_string = False
+    escaped = False
+    depth = 0
+    start = -1
+
+    for i, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_string:
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    return text[start : i + 1]
+    return None
+
+
 def _extract_json_from_text(text: str) -> Any:
     if not text or not isinstance(text, str):
         raise ValueError(f"Expected non-empty string, got: {repr(text)}")
-    
-    text = text.strip()
+
+    text = _strip_markdown_code_fences(text)
     if not text:
         raise ValueError("Response text is empty")
-    
+
     try:
         return json.loads(text)
-    except json.JSONDecodeError as e:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
+    except json.JSONDecodeError:
+        candidate = _extract_first_json_object(text)
+        if candidate:
             try:
-                return json.loads(text[start : end + 1])
+                return json.loads(candidate)
             except json.JSONDecodeError:
-                raise ValueError(f"Could not extract valid JSON from response: {text[:200]}")
-        raise ValueError(f"No JSON object found in response: {text[:200]}")
+                pass
+        raise ValueError(f"Could not extract valid JSON from response: {text[:300]}")
 
 
 async def _generate_structured_json(
@@ -424,6 +461,7 @@ async def _generate_structured_json(
                 messages=messages,
                 temperature=0.0,
                 max_tokens=1600,
+                response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content
             if not content:
@@ -504,6 +542,7 @@ async def recognize_food(image_file: UploadFile = File(...)) -> JSONResponse:
                 messages=messages,
                 temperature=0.0,
                 max_tokens=1600,
+                response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content
             if not content:
