@@ -247,6 +247,45 @@ def _get_meal_names(total_meals: int) -> List[str]:
         return [f"Meal {i+1}" for i in range(1, total_meals + 1)]
 
 
+def _meal_priority_weight(meal_name: str) -> float:
+    key = meal_name.strip().lower()
+    weights = {
+        "breakfast": 0.40,
+        "lunch": 0.30,
+        "dinner": 0.20,
+        "snack": 0.10,
+        "snacks": 0.10,
+        "dessert": 0.05,
+    }
+    return weights.get(key, 0.05)
+
+
+def _distribute_calories_by_priority(
+    remaining_calories: int, meal_names: List[str]
+) -> Dict[str, int]:
+    if remaining_calories <= 0 or not meal_names:
+        return {meal_name: 0 for meal_name in meal_names}
+
+    raw_weights = [max(0.01, _meal_priority_weight(meal_name)) for meal_name in meal_names]
+    total_weight = sum(raw_weights)
+    normalized_weights = [weight / total_weight for weight in raw_weights]
+
+    raw_targets = [remaining_calories * weight for weight in normalized_weights]
+    targets = [int(target) for target in raw_targets]
+
+    remainder = remaining_calories - sum(targets)
+    if remainder > 0:
+        order = sorted(
+            range(len(meal_names)),
+            key=lambda index: (raw_targets[index] - targets[index], raw_weights[index]),
+            reverse=True,
+        )
+        for index in range(remainder):
+            targets[order[index % len(order)]] += 1
+
+    return {meal_names[index]: targets[index] for index in range(len(meal_names))}
+
+
 def _build_chat_prompt(payload: ChatRequest) -> str:
     return (
         "You are a nutrition assistant. "
@@ -634,9 +673,11 @@ async def adjust_meal_plan(payload: AdjustMealPlanRequest) -> AdjustMealPlanResp
             warning=warning
         )
 
-    per_meal_calories = remaining_calories // remaining_meals_count
-
-    meals_data = [{"mealName": name, "calorieTarget": per_meal_calories} for name in remaining_names]
+    calorie_targets = _distribute_calories_by_priority(remaining_calories, remaining_names)
+    meals_data = [
+        {"mealName": name, "calorieTarget": calorie_targets[name]}
+        for name in remaining_names
+    ]
     prompt = (
         "Suggest balanced, healthy foods for the following meals, each with the specified calorie target. "
         "Consider meal times and nutritional balance. "
